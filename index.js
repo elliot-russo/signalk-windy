@@ -31,14 +31,23 @@ module.exports = function(app) {
   var lastSuccessfulUpdate;
   var name = app.getSelfPath('name');
 
+
+  var API_URI;
+  var GPS_Source;
+  var Wind_SpeedKey = "environment.wind.speedOverGround";
+  var Wind_DirectionKey = "environment.wind.directionGround";
+
   var position;
   var windSpeed = [];
   var windGust;
   var windDirection;
+
+  /*
   var waterTemperature;
   var temperature;
   var pressure;
   var humidity;
+  */
 
   plugin.id = "signalk-windy";
   plugin.name = "SignalK Windy.com";
@@ -71,6 +80,20 @@ module.exports = function(app) {
         type: 'string',
         title: 'Web Site',
         default: ''
+      },
+      GpsSource: {
+        type: 'string',
+        title: 'Position Source'
+      },
+      WindSpeedKey: {
+        type: 'string',
+        title: 'Data key for wind Speed',
+        default: 'environment.wind.speedOverGround'
+      },
+      WindDirectionKey: {
+        type: 'string',
+        title: 'Data key for wind Direction',
+        default: 'environment.wind.directionGround'
       }
     }
   }
@@ -78,9 +101,15 @@ module.exports = function(app) {
   plugin.start = function(options) {
     if (!options.apiKey) {
       app.error('API Key is required');
-      return
-    } 
+      return;
+    }
 
+    API_URI = API_BASE + options.apiKey;
+
+    if (options.GpsSource) GPS_Source = options.GpsSource;
+    if (options.WindSpeedKey) Wind_SpeedKey = options.WindSpeedKey;
+    if (options.WindDirectionKey) Wind_DirectionKey = options.WindDirectionKey;
+  
     app.setPluginStatus(`Submitting weather report every ${options.submitInterval} minutes`);
 
     let subscription = {
@@ -89,22 +118,10 @@ module.exports = function(app) {
         path: 'navigation.position',
         period: POLL_INTERVAL * 1000
       }, {
-        path: 'environment.wind.directionGround',
+        path: Wind_DirectionKey,
         period: POLL_INTERVAL * 1000
       }, {
-        path: 'environment.wind.speedOverGround',
-        period: POLL_INTERVAL * 1000
-      }, {
-        path: 'environment.water.temperature',
-        period: POLL_INTERVAL * 1000
-      }, {
-        path: 'environment.outside.temperature',
-        period: POLL_INTERVAL * 1000
-      }, {
-        path: 'environment.outside.pressure',
-        period: POLL_INTERVAL * 1000
-      }, {
-        path: 'environment.outside.humidity',
+        path: Wind_SpeedKey,
         period: POLL_INTERVAL * 1000
       }]
     };
@@ -129,16 +146,19 @@ module.exports = function(app) {
     }, 5 * 1000);
 
     submitProcess = setInterval( function() {
-      if ( (position == null) || (windSpeed.length == 0) || (windDirection == null) ||
-           (temperature == null) ) {
-	let message = 'Not submitting position due to lack of position, wind ' +
-	              'speed, wind direction or temperature.';
-	app.debug(message);
-        return
+      if ( (position == null) || (windSpeed.length == 0) || (windDirection == null) ) {
+
+	      let message = 'Not submitting data to missing position, wind ' +
+	              'speed or wind direction.';
+
+	      app.debug(message);
+        return;
       }
+
       let data = {
         stations: [
-          { station: options.stationId,
+          { 
+            station: options.stationId,
             name: name,
             shareOption: 'Open',
             type: 'Signal K Windy Plugin',
@@ -149,18 +169,23 @@ module.exports = function(app) {
             elevation: 1 }
         ],
         observations: [
-          { station: options.stationId,
-            temp: temperature,
+          { 
+            station: options.stationId,
             wind: median(windSpeed),
-	    gust: windGust,
-            winddir: windDirection,
-            pressure: pressure,
-            rh: humidity }
+	          gust: windGust,
+            winddir: windDirection
+          }
         ]
       }
     
+      /*
+      temp: temperature,
+      pressure: pressure,
+      rh: humidity
+      */
+
       let httpOptions = {
-        uri: API_BASE + options.apiKey,
+        uri: API_URI,
         method: 'POST',
         json: data
       };
@@ -169,15 +194,17 @@ module.exports = function(app) {
       request(httpOptions, function (error, response, body) {
         if (!error || response.statusCode == 200) {
           app.debug('Weather report successfully submitted');
-	  lastSuccessfulUpdate = Date.now();
+	        lastSuccessfulUpdate = Date.now();
           position = null;
           windSpeed = [];
           windGust = null;
           windDirection = null;
+          /*
           waterTemperature = null;
           temperature = null;
           pressure = null;
           humidity = null;
+          */
         } else {
           app.debug('Error submitting to Windy.com API');
           app.debug(body); 
@@ -207,39 +234,49 @@ module.exports = function(app) {
     let dict = data.updates[0].values[0];
     let path = dict.path;
     let value = dict.value;
+    let source = data.updates[0]['$source'];
 
     switch (path) {
+
       case 'navigation.position':
+        if ((GPS_Source) && (source != GPS_Source)) break;
         position = value;
         break;
-      case 'environment.wind.speedOverGround':
+
+      case Wind_SpeedKey:
         let speed = value.toFixed(2);
         speed = parseFloat(speed);
-	if ((windGust == null) || (speed > windGust)) {
-	  windGust = speed;
-	}
-	windSpeed.push(speed);
+	      if ((windGust == null) || (speed > windGust)) windGust = speed;
+	      windSpeed.push(speed);
         break;
-      case 'environment.wind.directionGround':
+
+      case Wind_DirectionKey:
         windDirection = radiantToDegrees(value);
         windDirection = Math.round(windDirection);
         break;
+
+      /*
       case 'environment.water.temperature':
         waterTemperature = kelvinToCelsius(value);
         waterTemperature = waterTemperature.toFixed(1);
         waterTemperature = parseFloat(waterTemperature);
         break;
+
       case 'environment.outside.temperature':
         temperature = kelvinToCelsius(value);
         temperature = temperature.toFixed(1);
         temperature = parseFloat(temperature);
         break;
+
       case 'environment.outside.pressure':
         pressure = parseFloat(value);
         break;
+
       case 'environment.outside.humidity':
         humidity = Math.round(100*parseFloat(value));
         break;
+      */
+
       default:
         app.debug('Unknown path: ' + path);
     }
@@ -265,7 +302,7 @@ module.exports = function(app) {
       if (time == 1) {
         return (`${time} hour`);
       } else {
-	return (msg = `${time} hours`);
+	      return (msg = `${time} hours`);
       }
     }
     interval = seconds / 60;
@@ -274,7 +311,7 @@ module.exports = function(app) {
       if (time == 1) {
         return (`${time} minute`);
       } else {
-	return (msg = `${time} minutes`);
+	      return (msg = `${time} minutes`);
       }
     }
     return Math.floor(seconds) + " seconds";
