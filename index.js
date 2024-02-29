@@ -24,23 +24,22 @@ const median = arr => {
 };
 
 module.exports = function(app) {
-  var plugin = {};
-  var unsubscribes = [];
-  var submitProcess;
-  var statusProcess;
-  var lastSuccessfulUpdate;
-  var name = app.getSelfPath('name');
+  let plugin = {};
+  let unsubscribes = [];
+  let submitProcess;
+  let statusProcess;
+  let name = app.getSelfPath('name');
 
-
-  var API_URI;
-  var GPS_Source;
-  var Wind_SpeedKey = "environment.wind.speedOverGround";
-  var Wind_DirectionKey = "environment.wind.directionGround";
-
-  var position;
-  var windSpeed = [];
-  var windGust;
-  var windDirection;
+  let API_URI;
+  let GPS_Source;
+  let Wind_Speed_Path = "environment.wind.speedTrue"; //speedTrue
+  let Wind_Direction_Path = "environment.wind.directionTrue"; //directionTrue
+  
+  let lastSuccessfulUpdate;
+  let position;
+  let windSpeed = [];
+  let windGust;
+  let windDirection;
 
   /*
   var waterTemperature;
@@ -85,12 +84,12 @@ module.exports = function(app) {
         type: 'string',
         title: 'Position Source'
       },
-      WindSpeedKey: {
+      WindSpeedPath: {
         type: 'string',
         title: 'Data key for wind Speed',
         default: 'environment.wind.speedOverGround'
       },
-      WindDirectionKey: {
+      WindDirectionPath: {
         type: 'string',
         title: 'Data key for wind Direction',
         default: 'environment.wind.directionGround'
@@ -107,8 +106,8 @@ module.exports = function(app) {
     API_URI = API_BASE + options.apiKey;
 
     if (options.GpsSource) GPS_Source = options.GpsSource;
-    if (options.WindSpeedKey) Wind_SpeedKey = options.WindSpeedKey;
-    if (options.WindDirectionKey) Wind_DirectionKey = options.WindDirectionKey;
+    if (options.WindSpeedPath) Wind_Speed_Path = options.WindSpeedPath;
+    if (options.WindDirectionPath) Wind_Direction_Path = options.WindDirectionPath;
   
     app.setPluginStatus(`Submitting weather report every ${options.submitInterval} minutes`);
 
@@ -118,10 +117,10 @@ module.exports = function(app) {
         path: 'navigation.position',
         period: POLL_INTERVAL * 1000
       }, {
-        path: Wind_DirectionKey,
+        path: Wind_Direction_Path,
         period: POLL_INTERVAL * 1000
       }, {
-        path: Wind_SpeedKey,
+        path: Wind_Speed_Path,
         period: POLL_INTERVAL * 1000
       }]
     };
@@ -133,27 +132,42 @@ module.exports = function(app) {
     app.debug(`Starting submission process every ${options.submitInterval} minutes`);
 
     statusProcess = setInterval( function() {
-      var statusMessage = '';
+      let statusMessage = '';
       if (lastSuccessfulUpdate) {
         let since = timeSince(lastSuccessfulUpdate);
       	statusMessage += `Successful submission ${since} ago. `;
       }
       if ((windSpeed.length > 0) && (windGust != null)) {
       	let currentWindSpeed = windSpeed[windSpeed.length-1];
-      	statusMessage += `Wind speed is ${currentWindSpeed}kts and gust is ${windGust}kts.`;
+      	statusMessage += `Wind speed is ${currentWindSpeed}m/s and max gust is ${windGust}m/s. Directon is ${windDirection} `;
       } 
       app.setPluginStatus(statusMessage);
     }, 5 * 1000);
 
+
+    /* SUBMIT TO WINDY */
     submitProcess = setInterval( function() {
+
+      /*validate inputs*/
       if ( (position == null) || (windSpeed.length == 0) || (windDirection == null) ) {
 
-	      let message = 'Not submitting data to missing position, wind ' +
-	              'speed or wind direction.';
-
+	      let message = 'NO SUBMISSION: ';
+        if (position == null)
+          message += 'No Position data'
+        if (windSpeed.length == 0)
+          message += 'No Wind speed data.'
+        if (windDirection == null)
+          message += 'No Wind direction data.'
+	      
 	      app.debug(message);
+
         return;
       }
+
+      /* form data packet */
+      
+      let windspeedMedian = median(windSpeed);
+      windspeedMedian = windspeedMedian.toFixed(2);
 
       let data = {
         stations: [
@@ -171,14 +185,14 @@ module.exports = function(app) {
         observations: [
           { 
             station: options.stationId,
-            wind: median(windSpeed),
+            wind: windspeedMedian,
 	          gust: windGust,
             winddir: windDirection
           }
         ]
       }
     
-      /*
+      /* removed
       temp: temperature,
       pressure: pressure,
       rh: humidity
@@ -191,14 +205,18 @@ module.exports = function(app) {
       };
 
       app.debug(`Submitting data: ${JSON.stringify(data)}`);
+
       request(httpOptions, function (error, response, body) {
         if (!error || response.statusCode == 200) {
           app.debug('Weather report successfully submitted');
+
+          /* reset data */
 	        lastSuccessfulUpdate = Date.now();
           position = null;
           windSpeed = [];
           windGust = null;
           windDirection = null;
+
           /*
           waterTemperature = null;
           temperature = null;
@@ -235,6 +253,7 @@ module.exports = function(app) {
     let path = dict.path;
     let value = dict.value;
     let source = data.updates[0]['$source'];
+    let speed;
 
     switch (path) {
 
@@ -243,14 +262,17 @@ module.exports = function(app) {
         position = value;
         break;
 
-      case Wind_SpeedKey:
-        let speed = value.toFixed(2);
+      case Wind_Speed_Path:
+        speed = value.toFixed(2);
         speed = parseFloat(speed);
-	      if ((windGust == null) || (speed > windGust)) windGust = speed;
-	      windSpeed.push(speed);
+        windSpeed.push(speed);
+
+        /* update max wind gust */
+        if ((windGust == null) || (speed > windGust)) windGust = speed;
+	      
         break;
 
-      case Wind_DirectionKey:
+      case Wind_Direction_Path:
         windDirection = radiantToDegrees(value);
         windDirection = Math.round(windDirection);
         break;
@@ -283,8 +305,8 @@ module.exports = function(app) {
   }
 
   function timeSince(date) {
-    var seconds = Math.floor((new Date() - date) / 1000);
-    var interval = seconds / 31536000;
+    let seconds = Math.floor((new Date() - date) / 1000);
+    let interval = seconds / 31536000;
     if (interval > 1) {
       return Math.floor(interval) + " years";
     }
@@ -302,7 +324,7 @@ module.exports = function(app) {
       if (time == 1) {
         return (`${time} hour`);
       } else {
-	      return (msg = `${time} hours`);
+	      return (`${time} hours`);
       }
     }
     interval = seconds / 60;
@@ -311,7 +333,7 @@ module.exports = function(app) {
       if (time == 1) {
         return (`${time} minute`);
       } else {
-	      return (msg = `${time} minutes`);
+	      return (`${time} minutes`);
       }
     }
     return Math.floor(seconds) + " seconds";
